@@ -1,0 +1,15 @@
+[package]
+name = "rtl9617c-factory"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+
+[dependencies]
+lzokay-native = { version = "0.1", default-features = false, features = ["decompress"] }
+flate2 = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
