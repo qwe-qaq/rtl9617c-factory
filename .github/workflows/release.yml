@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布用的 tag 名（留空则自动生成 v<version>-nightly.<run#>）"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -71,6 +76,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # softprops/action-gh-release 未显式给 tag_name 时只会从 refs/tags/* 推断，
+      # 手动触发（ref 为分支）时推断结果为空并直接失败，所以这里显式解析出 tag。
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+            prerelease=false
+          elif [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+            case "$tag" in
+              *-nightly*|*-rc*|*-alpha*|*-beta*) prerelease=true ;;
+              *) prerelease=false ;;
+            esac
+          else
+            version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)
+            tag="v${version}-nightly.${{ github.run_number }}"
+            prerelease=true
+          fi
+          echo "resolved tag: $tag (prerelease=$prerelease)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
       - name: Collect artifacts
         uses: actions/download-artifact@v4
         with:
@@ -81,14 +111,31 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum * > SHA256SUMS.txt
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # tag 不存在时 GitHub 会按 target_commitish 自动创建，无需 git tag/push
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.tag.outputs.tag }}
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          overwrite_files: true
+          generate_release_notes: true
           files: |
             dist/*.tar.gz
             dist/*.zip
             dist/SHA256SUMS.txt
-          generate_release_notes: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Release ${{ steps.tag.outputs.tag }}"
+            echo ""
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- prerelease: \`${{ steps.tag.outputs.prerelease }}\`"
+            echo ""
+            echo "<https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }}>"
+          } >> "$GITHUB_STEP_SUMMARY"
